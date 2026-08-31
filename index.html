@@ -1,0 +1,1099 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Moon, 
+  Sun, 
+  Clock, 
+  BarChart3, 
+  Calendar, 
+  Plus, 
+  Trash2, 
+  CheckCircle2, 
+  TrendingUp, 
+  ChevronRight, 
+  Sparkles, 
+  Eye, 
+  EyeOff, 
+  Download, 
+  Check,
+  Edit3,
+  Footprints,
+  Sunrise,
+  BedDouble
+} from 'lucide-react';
+
+// Generera realistisk demodata för att demonstrera statistik direkt
+const generateSampleData = () => {
+  const data = [];
+  const now = new Date();
+  
+  for (let i = 14; i >= 1; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    
+    // Slumpa läggdags mellan 22:30 och 23:45
+    const bed = new Date(d);
+    bed.setHours(22 + (Math.random() > 0.5 ? 1 : 0), Math.floor(Math.random() * 50), 0);
+    
+    // Slumpa vaknatid mellan 06:15 och 07:15
+    const wake = new Date(d);
+    wake.setDate(wake.getDate() + 1);
+    wake.setHours(6 + (Math.random() > 0.6 ? 1 : 0), Math.floor(Math.random() * 45), 0);
+
+    // Slumpa uppstigning 10–35 minuter efter att man vaknat
+    const outOfBed = new Date(wake.getTime() + (10 + Math.floor(Math.random() * 25)) * 60000);
+    
+    // Nattuppvaknanden (0 till 3 st)
+    const wakeCount = Math.floor(Math.random() * 3.2);
+    const nightEvents = [];
+    
+    for (let w = 0; w < wakeCount; w++) {
+      const eventTime = new Date(d);
+      eventTime.setDate(eventTime.getDate() + 1);
+      eventTime.setHours(2 + w * 2, Math.floor(Math.random() * 50), 0);
+      nightEvents.push({
+        id: 'evt_' + Math.random().toString(36).substr(2, 9),
+        timestamp: eventTime.getTime(),
+        type: 'toilet',
+        label: 'Toalettbesök'
+      });
+    }
+    
+    data.push({
+      id: 'session_' + i,
+      dateString: d.toISOString().split('T')[0],
+      bedTime: bed.getTime(),
+      wakeTime: wake.getTime(),
+      outOfBedTime: outOfBed.getTime(),
+      nightEvents: nightEvents,
+      quality: Math.max(1, 5 - wakeCount),
+      note: wakeCount > 1 ? 'Vaknade törstig' : ''
+    });
+  }
+  return data;
+};
+
+export default function App() {
+  // Lokalt tillstånd för appen
+  const [sessions, setSessions] = useState(() => {
+    const saved = localStorage.getItem('sleep_sessions_v2');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { }
+    }
+    return generateSampleData();
+  });
+
+  const [activeSession, setActiveSession] = useState(() => {
+    const saved = localStorage.getItem('sleep_active_session_v2');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { }
+    }
+    return null;
+  });
+
+  const [activeTab, setActiveTab] = useState('tracker'); // 'tracker' | 'stats' | 'history'
+  const [statsPeriod, setStatsPeriod] = useState('week'); // 'week' | 'month' | 'all'
+  const [nightFilterMode, setNightFilterMode] = useState(false); // Dämpat nattläge
+  const [toastMessage, setToastMessage] = useState(null);
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+
+  // Formulärtillstånd för manuell inmatning
+  const [manualBedTime, setManualBedTime] = useState('23:00');
+  const [manualWakeTime, setManualWakeTime] = useState('06:45');
+  const [manualOutOfBedTime, setManualOutOfBedTime] = useState('07:05');
+  const [manualWakeCount, setManualWakeCount] = useState(1);
+  const [manualDate, setManualDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // Spara data till localStorage
+  useEffect(() => {
+    localStorage.setItem('sleep_sessions_v2', JSON.stringify(sessions));
+  }, [sessions]);
+
+  useEffect(() => {
+    if (activeSession) {
+      localStorage.setItem('sleep_active_session_v2', JSON.stringify(activeSession));
+    } else {
+      localStorage.removeItem('sleep_active_session_v2');
+    }
+  }, [activeSession]);
+
+  // Toast / feedback-hjälpare med mjuk vibration
+  const showToast = (text) => {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try { navigator.vibrate(40); } catch(e) {}
+    }
+    setToastMessage(text);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Formatera klockslag (HH:MM)
+  const formatTime = (timestamp) => {
+    if (!timestamp) return '--:--';
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Formatera datum
+  const formatDate = (dateStrOrTimestamp) => {
+    const date = new Date(dateStrOrTimestamp);
+    return date.toLocaleDateString('sv-SE', { weekday: 'short', day: 'numeric', month: 'short' });
+  };
+
+  // Beräkna tidsdifferens i text
+  const getDurationText = (start, end) => {
+    if (!start || !end) return '';
+    const diffMs = end - start;
+    if (diffMs <= 0) return '0 min';
+    const totalMinutes = Math.floor(diffMs / (1000 * 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    if (hours === 0) return `${mins} min`;
+    return `${hours} tim ${mins > 0 ? mins + ' min' : ''}`;
+  };
+
+  // --- KNAPP-HANDLERS ---
+
+  // 1. Gå och lägga sig
+  const handleGoToBed = () => {
+    const now = Date.now();
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    const newSession = {
+      id: 'session_' + now,
+      dateString: todayStr,
+      bedTime: now,
+      wakeTime: null,
+      outOfBedTime: null,
+      nightEvents: [],
+      quality: 4,
+      note: ''
+    };
+
+    setActiveSession(newSession);
+    showToast(`🌙 Läggdags stämplat kl. ${formatTime(now)}`);
+  };
+
+  // 2. Upp i natten (Toalett / Uppvak)
+  const handleNightAwakening = (type = 'toilet') => {
+    const now = Date.now();
+    const newEvent = {
+      id: 'evt_' + now,
+      timestamp: now,
+      type: type,
+      label: type === 'toilet' ? 'Toalettbesök' : 'Vaknade till'
+    };
+
+    if (activeSession) {
+      const updated = {
+        ...activeSession,
+        nightEvents: [...(activeSession.nightEvents || []), newEvent]
+      };
+      setActiveSession(updated);
+      showToast(`🚻 Toalettbesök loggat kl. ${formatTime(now)} (Totalt: ${updated.nightEvents.length})`);
+    } else {
+      // Skapa en aktiv session retroaktivt om användaren glömt trycka läggdags
+      const estimatedBed = now - (2 * 60 * 60 * 1000);
+      const newSession = {
+        id: 'session_' + now,
+        dateString: new Date().toISOString().split('T')[0],
+        bedTime: estimatedBed,
+        wakeTime: null,
+        outOfBedTime: null,
+        nightEvents: [newEvent],
+        quality: 3,
+        note: 'Startad vid nattuppvak'
+      };
+      setActiveSession(newSession);
+      showToast(`🚻 Loggat kl. ${formatTime(now)} (Ny nattsession påbörjad)`);
+    }
+  };
+
+  // 3. Vaknar (Slår upp ögonen i sängen)
+  const handleWakeUp = () => {
+    const now = Date.now();
+    if (!activeSession) {
+      const estimatedBed = now - (7.5 * 60 * 60 * 1000);
+      setActiveSession({
+        id: 'session_' + now,
+        dateString: new Date().toISOString().split('T')[0],
+        bedTime: estimatedBed,
+        wakeTime: now,
+        outOfBedTime: null,
+        nightEvents: [],
+        quality: 4,
+        note: ''
+      });
+      showToast(`👁️ Vaknade kl. ${formatTime(now)}`);
+      return;
+    }
+
+    setActiveSession(prev => ({
+      ...prev,
+      wakeTime: now
+    }));
+    showToast(`👁️ Vaknade kl. ${formatTime(now)}. Tryck "Stiger upp" när du kliver ur sängen.`);
+  };
+
+  // 4. Stiger upp (Kliver ur sängen / Avslutar natten)
+  const handleOutOfBed = () => {
+    const now = Date.now();
+    
+    if (!activeSession) {
+      // Om ingen session finns, skapa och spara direkt
+      const estimatedBed = now - (8 * 60 * 60 * 1000);
+      const estimatedWake = now - (15 * 60 * 1000);
+      const completed = {
+        id: 'session_' + now,
+        dateString: new Date().toISOString().split('T')[0],
+        bedTime: estimatedBed,
+        wakeTime: estimatedWake,
+        outOfBedTime: now,
+        nightEvents: [],
+        quality: 4,
+        note: ''
+      };
+      setSessions(prev => [completed, ...prev]);
+      showToast(`🌅 God morgon! Uppstigning kl. ${formatTime(now)} sparad.`);
+      return;
+    }
+
+    const completed = {
+      ...activeSession,
+      wakeTime: activeSession.wakeTime || now,
+      outOfBedTime: now
+    };
+
+    setSessions(prev => [completed, ...prev]);
+    setActiveSession(null);
+    showToast(`🌅 God morgon! Uppstigning kl. ${formatTime(now)}. Natten är sparad!`);
+  };
+
+  // Ångra/rensa aktiv session
+  const handleCancelActive = () => {
+    if (window.confirm('Vill du avbryta och rensa den pågående mätningen för inatt?')) {
+      setActiveSession(null);
+      showToast('Pågående natt rensades.');
+    }
+  };
+
+  // Radera sparad session
+  const handleDeleteSession = (id) => {
+    if (window.confirm('Vill du ta bort denna natt från historiken?')) {
+      setSessions(prev => prev.filter(s => s.id !== id));
+      showToast('Natt borttagen.');
+    }
+  };
+
+  // Spara manuell natt
+  const handleSaveManual = (e) => {
+    e.preventDefault();
+    const bedDate = new Date(`${manualDate}T${manualBedTime}`);
+    const wakeDate = new Date(`${manualDate}T${manualWakeTime}`);
+    const outDate = new Date(`${manualDate}T${manualOutOfBedTime}`);
+    
+    if (wakeDate <= bedDate) wakeDate.setDate(wakeDate.getDate() + 1);
+    if (outDate <= bedDate) outDate.setDate(outDate.getDate() + 1);
+    if (outDate < wakeDate) outDate.setTime(wakeDate.getTime() + 10 * 60000);
+
+    const nightEvents = [];
+    for (let i = 0; i < manualWakeCount; i++) {
+      const eventTime = new Date(bedDate.getTime() + (i + 1) * ((wakeDate.getTime() - bedDate.getTime()) / (manualWakeCount + 1)));
+      nightEvents.push({
+        id: 'evt_man_' + Math.random().toString(36).substr(2, 9),
+        timestamp: eventTime.getTime(),
+        type: 'toilet',
+        label: 'Toalettbesök'
+      });
+    }
+
+    const newEntry = {
+      id: 'session_' + Date.now(),
+      dateString: manualDate,
+      bedTime: bedDate.getTime(),
+      wakeTime: wakeDate.getTime(),
+      outOfBedTime: outDate.getTime(),
+      nightEvents: nightEvents,
+      quality: 4,
+      note: 'Manuellt inlagd'
+    };
+
+    setSessions(prev => [newEntry, ...prev]);
+    setIsManualModalOpen(false);
+    showToast('✅ Natten har lagts till i historiken!');
+  };
+
+  // --- STATISTIKBERÄKNINGAR ---
+  const stats = useMemo(() => {
+    const all = [...sessions].sort((a, b) => b.bedTime - a.bedTime);
+    let filtered = all;
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    if (statsPeriod === 'week') {
+      filtered = all.filter(s => (now - s.bedTime) <= 7 * oneDay);
+    } else if (statsPeriod === 'month') {
+      filtered = all.filter(s => (now - s.bedTime) <= 30 * oneDay);
+    }
+
+    if (filtered.length === 0) {
+      return {
+        count: 0,
+        avgSleepMinutes: 0,
+        avgBedMinutes: 0,
+        avgAwakenings: 0,
+        totalAwakenings: 0,
+        avgLingerMinutes: 0,
+        zeroWakesPercentage: 0,
+        commonHour: '--:--',
+        chartData: []
+      };
+    }
+
+    let totalSleepMs = 0;
+    let totalTimeInBedMs = 0;
+    let totalLingerMs = 0;
+    let totalAwakenings = 0;
+    let zeroWakesCount = 0;
+    const hourHistogram = {};
+
+    filtered.forEach(s => {
+      const endWake = s.wakeTime || s.outOfBedTime || (s.bedTime + 8 * 3600000);
+      const endOut = s.outOfBedTime || endWake;
+      
+      const sleepDur = endWake - s.bedTime;
+      const bedDur = endOut - s.bedTime;
+      const lingerDur = Math.max(0, endOut - endWake);
+
+      totalSleepMs += sleepDur;
+      totalTimeInBedMs += bedDur;
+      totalLingerMs += lingerDur;
+
+      const wakes = s.nightEvents ? s.nightEvents.length : 0;
+      totalAwakenings += wakes;
+      if (wakes === 0) zeroWakesCount++;
+
+      (s.nightEvents || []).forEach(e => {
+        const hour = new Date(e.timestamp).getHours();
+        hourHistogram[hour] = (hourHistogram[hour] || 0) + 1;
+      });
+    });
+
+    let mostCommonHour = null;
+    let maxOccur = 0;
+    Object.entries(hourHistogram).forEach(([hour, count]) => {
+      if (count > maxOccur) {
+        maxOccur = count;
+        mostCommonHour = hour;
+      }
+    });
+
+    const avgSleepMin = Math.round(totalSleepMs / (filtered.length * 60000));
+    const avgBedMin = Math.round(totalTimeInBedMs / (filtered.length * 60000));
+    const avgLingerMin = Math.round(totalLingerMs / (filtered.length * 60000));
+    const avgAwakenings = (totalAwakenings / filtered.length).toFixed(1);
+    const zeroWakesPercent = Math.round((zeroWakesCount / filtered.length) * 100);
+
+    const chartData = [...filtered].reverse().slice(-14).map(s => {
+      const wakes = s.nightEvents ? s.nightEvents.length : 0;
+      const dateObj = new Date(s.bedTime);
+      return {
+        id: s.id,
+        label: `${dateObj.toLocaleDateString('sv-SE', { weekday: 'narrow' })} ${dateObj.getDate()}`,
+        wakeCount: wakes,
+        sleepHours: (((s.wakeTime || s.bedTime) - s.bedTime) / 3600000).toFixed(1),
+        outOfBedFormatted: formatTime(s.outOfBedTime || s.wakeTime),
+        date: s.dateString
+      };
+    });
+
+    return {
+      count: filtered.length,
+      avgSleepHours: Math.floor(avgSleepMin / 60),
+      avgSleepMinsRest: avgSleepMin % 60,
+      avgBedHours: Math.floor(avgBedMin / 60),
+      avgBedMinsRest: avgBedMin % 60,
+      avgLingerMin,
+      avgAwakenings,
+      totalAwakenings,
+      zeroWakesPercentage: zeroWakesPercent,
+      commonHour: mostCommonHour !== null ? `ca kl. ${mostCommonHour.padStart(2, '0')}:00` : 'Inga uppvak',
+      chartData
+    };
+  }, [sessions, statsPeriod]);
+
+  // Exportera CSV
+  const exportDataCSV = () => {
+    let csv = 'Datum;La sig;Vaknade;Steg upp;Sovtid (min);Tid i sang (min);Nattuppvak (antal);Klockslag for uppvak\n';
+    sessions.forEach(s => {
+      const bed = s.bedTime ? new Date(s.bedTime).toLocaleTimeString('sv-SE') : '';
+      const wake = s.wakeTime ? new Date(s.wakeTime).toLocaleTimeString('sv-SE') : '';
+      const out = s.outOfBedTime ? new Date(s.outOfBedTime).toLocaleTimeString('sv-SE') : '';
+      const sleepMin = s.wakeTime && s.bedTime ? Math.round((s.wakeTime - s.bedTime) / 60000) : '';
+      const bedMin = s.outOfBedTime && s.bedTime ? Math.round((s.outOfBedTime - s.bedTime) / 60000) : sleepMin;
+      const wakesCount = s.nightEvents ? s.nightEvents.length : 0;
+      const wakeTimes = (s.nightEvents || []).map(e => new Date(e.timestamp).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' })).join(', ');
+      
+      csv += `${s.dateString};${bed};${wake};${out};${sleepMin};${bedMin};${wakesCount};"${wakeTimes}"\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `somn_uppstigning_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('📊 CSV-fil exporterad!');
+  };
+
+  return (
+    <div className={`min-h-screen transition-colors duration-300 ${
+      nightFilterMode 
+        ? 'bg-neutral-950 text-red-500 selection:bg-red-900 selection:text-white' 
+        : 'bg-slate-950 text-slate-100 selection:bg-indigo-600 selection:text-white'
+    } pb-28 font-sans`}>
+
+      {/* Skonsamt nattfilter */}
+      {nightFilterMode && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-red-950/80 border-b border-red-900/50 px-4 py-2 text-xs flex items-center justify-between backdrop-blur-sm">
+          <span className="flex items-center gap-1.5 font-medium text-red-400">
+            <EyeOff className="w-4 h-4 text-red-400 animate-pulse" /> Nattfilter aktivt (dämpat ljus)
+          </span>
+          <button 
+            onClick={() => setNightFilterMode(false)}
+            className="px-2.5 py-1 rounded bg-red-900/60 text-red-200 text-xs hover:bg-red-800"
+          >
+            Avsluta
+          </button>
+        </div>
+      )}
+
+      {/* Toast Notis */}
+      {toastMessage && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-md bg-slate-900/95 border border-indigo-500/40 text-slate-100 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
+          <div className="p-2 rounded-full bg-indigo-500/20 text-indigo-400">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+          <span className="text-sm font-medium leading-tight">{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="px-5 pt-7 pb-4 max-w-md mx-auto flex items-center justify-between border-b border-slate-800/60">
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-600/30">
+              <Moon className="w-4 h-4" />
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-white">Nattkollen</h1>
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">Sömn, nattuppvak & uppstigning</p>
+        </div>
+
+        <button
+          onClick={() => setNightFilterMode(!nightFilterMode)}
+          title="Växla skonsamt nattfilter"
+          className={`p-2.5 rounded-xl border transition-all ${
+            nightFilterMode
+              ? 'bg-red-950 border-red-800 text-red-400 shadow-inner'
+              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          {nightFilterMode ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
+        </button>
+      </header>
+
+      {/* HUVUDINNEHÅLL */}
+      <main className="max-w-md mx-auto px-4 pt-5">
+        
+        {/* FLIK 1: ENKLA REGISTRERINGSKNAPPAR */}
+        {activeTab === 'tracker' && (
+          <div className="space-y-4 animate-in fade-in">
+            
+            {/* Statusbanner */}
+            <div className={`p-4 rounded-2xl border transition-all ${
+              activeSession 
+                ? 'bg-gradient-to-b from-indigo-950/60 to-slate-900/80 border-indigo-700/50 shadow-lg shadow-indigo-950/40' 
+                : 'bg-slate-900/60 border-slate-800/80'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs uppercase tracking-wider font-semibold text-slate-400 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                  Pågående dygn
+                </span>
+                {activeSession && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                    Aktiv natt
+                  </span>
+                )}
+              </div>
+
+              {activeSession ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded-xl bg-slate-950/40 border border-slate-800/60">
+                      <span className="text-slate-400 block">🌙 La dig:</span>
+                      <span className="text-sm font-bold text-white">{formatTime(activeSession.bedTime)}</span>
+                    </div>
+                    <div className="p-2 rounded-xl bg-slate-950/40 border border-slate-800/60">
+                      <span className="text-slate-400 block">👁️ Vaknade:</span>
+                      <span className="text-sm font-bold text-amber-300">
+                        {activeSession.wakeTime ? formatTime(activeSession.wakeTime) : 'Sover...'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {activeSession.nightEvents && activeSession.nightEvents.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {activeSession.nightEvents.map((evt, idx) => (
+                        <span key={evt.id} className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px]">
+                          🚻 #{idx + 1}: {formatTime(evt.timestamp)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-1">
+                    <button 
+                      onClick={handleCancelActive}
+                      className="text-xs text-rose-400/80 hover:text-rose-300 underline underline-offset-4"
+                    >
+                      Avbryt / Rensa aktiv mätning
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-1 text-center text-slate-400 text-xs">
+                  Klicka på knappen nedan när du går och lägger dig.
+                </div>
+              )}
+            </div>
+
+            {/* DE 4 ENKLA STORA KNAPPARNA FÖR MOBILEN */}
+            <div className="space-y-3">
+              
+              {/* 1. LÄGGER MIG */}
+              <button
+                onClick={handleGoToBed}
+                className={`w-full py-4 px-5 rounded-2xl border flex items-center justify-between transition-all active:scale-[0.98] ${
+                  !activeSession 
+                    ? 'bg-indigo-600 hover:bg-indigo-500 border-indigo-400/40 shadow-lg shadow-indigo-900/30 text-white' 
+                    : 'bg-slate-900/70 border-slate-800 text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl ${
+                    !activeSession ? 'bg-indigo-950/80 border border-indigo-300/30' : 'bg-slate-800'
+                  }`}>
+                    🌙
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-base leading-tight">1. Går och lägger mig</div>
+                    <div className="text-xs opacity-75 font-normal">
+                      {activeSession ? `Registrerad kl. ${formatTime(activeSession.bedTime)}` : 'Klicka när du lägger dig i sängen'}
+                    </div>
+                  </div>
+                </div>
+                {activeSession ? (
+                  <span className="text-emerald-400 text-xs font-bold flex items-center gap-1">
+                    <Check className="w-4 h-4" /> Klar
+                  </span>
+                ) : (
+                  <ChevronRight className="w-5 h-5 text-indigo-200" />
+                )}
+              </button>
+
+              {/* 2. UPP I NATTEN / TOALETT */}
+              <button
+                onClick={() => handleNightAwakening('toilet')}
+                className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 hover:from-amber-500 hover:to-amber-600 border border-amber-400/30 text-white shadow-lg shadow-amber-950/40 flex items-center justify-between transition-all active:scale-[0.98]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-amber-950/80 border border-amber-300/30 flex items-center justify-center text-xl">
+                    🚻
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-base leading-tight">2. Upp i natten (Toalett)</div>
+                    <div className="text-xs text-amber-100/80 font-normal">Tryck varje gång du går upp</div>
+                  </div>
+                </div>
+                <div className="px-3 py-1 rounded-lg bg-amber-950/90 text-amber-200 text-xs font-bold border border-amber-400/30 shadow-inner">
+                  {activeSession?.nightEvents?.length ? `${activeSession.nightEvents.length} st` : '+1 Uppvak'}
+                </div>
+              </button>
+
+              {/* 3. VAKNAR (SLÅR UPP ÖGONEN) */}
+              <button
+                onClick={handleWakeUp}
+                className={`w-full py-4 px-5 rounded-2xl border flex items-center justify-between transition-all active:scale-[0.98] ${
+                  activeSession && !activeSession.wakeTime
+                    ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/40 text-amber-200 shadow-md'
+                    : 'bg-slate-900/80 border-slate-800 text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-xl">
+                    👁️
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-base leading-tight">3. Vaknar (Slår upp ögonen)</div>
+                    <div className="text-xs opacity-75 font-normal">
+                      {activeSession?.wakeTime ? `Vaknade kl. ${formatTime(activeSession.wakeTime)}` : 'När du vaknat men ligger kvar'}
+                    </div>
+                  </div>
+                </div>
+                {activeSession?.wakeTime ? (
+                  <span className="text-amber-400 text-xs font-bold flex items-center gap-1">
+                    <Check className="w-4 h-4" /> {formatTime(activeSession.wakeTime)}
+                  </span>
+                ) : (
+                  <span className="text-xs text-slate-400 font-medium">Logga</span>
+                )}
+              </button>
+
+              {/* 4. NY KNAPP: STIGER UPP (KLIVER UR SÄNGEN) */}
+              <button
+                onClick={handleOutOfBed}
+                className="w-full py-5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 via-emerald-500 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-300/40 text-white shadow-xl shadow-emerald-950/40 flex items-center justify-between transition-all active:scale-[0.98]"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-950/80 border border-emerald-300/40 flex items-center justify-center text-2xl shadow-inner">
+                    🌅
+                  </div>
+                  <div className="text-left">
+                    <div className="font-extrabold text-lg leading-tight">4. Stiger upp (Kliver ur sängen)</div>
+                    <div className="text-xs text-emerald-100/90 font-normal">Avslutar dygnet & sparar sömnen</div>
+                  </div>
+                </div>
+                <div className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-400/30 text-emerald-200">
+                  <Footprints className="w-5 h-5" />
+                </div>
+              </button>
+
+            </div>
+
+            {/* Manuell inmatningslänk */}
+            <div className="pt-1 text-center">
+              <button
+                onClick={() => setIsManualModalOpen(true)}
+                className="text-xs text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1.5 py-1 px-3 rounded-lg hover:bg-slate-900 transition-all"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                Glömt att trycka? Lägg till natt manuellt i efterhand
+              </button>
+            </div>
+
+            {/* Senaste natten i kortform */}
+            {sessions.length > 0 && (
+              <div className="pt-2">
+                <div className="text-xs uppercase font-semibold text-slate-400 mb-2 px-1">
+                  Senast sparade natt
+                </div>
+                <div className="bg-slate-900/90 border border-slate-800/90 rounded-2xl p-4 flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="text-xs text-slate-400">{formatDate(sessions[0].dateString)}</div>
+                    <div className="text-sm font-bold text-white">
+                      La sig {formatTime(sessions[0].bedTime)} ➔ Steg upp {formatTime(sessions[0].outOfBedTime || sessions[0].wakeTime)}
+                    </div>
+                    <div className="text-xs text-indigo-300 flex items-center gap-2">
+                      <span>Sovtid: {getDurationText(sessions[0].bedTime, sessions[0].wakeTime)}</span>
+                      {sessions[0].outOfBedTime && sessions[0].wakeTime && sessions[0].outOfBedTime > sessions[0].wakeTime && (
+                        <span className="text-slate-400">({getDurationText(sessions[0].wakeTime, sessions[0].outOfBedTime)} i säng)</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-slate-800 text-amber-300 font-bold text-xs border border-amber-500/20">
+                      🚻 {sessions[0].nightEvents?.length || 0} uppvak
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
+
+        {/* FLIK 2: STATISTIK */}
+        {activeTab === 'stats' && (
+          <div className="space-y-5 animate-in fade-in">
+            {/* Periodfilter */}
+            <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+              {[
+                { id: 'week', label: '7 dagar' },
+                { id: 'month', label: '30 dagar' },
+                { id: 'all', label: 'Långsiktigt' }
+              ].map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setStatsPeriod(t.id)}
+                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                    statsPeriod === t.id 
+                      ? 'bg-indigo-600 text-white shadow-md' 
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Statistikrutor */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4">
+                <div className="text-xs text-slate-400 flex items-center gap-1 mb-1">
+                  <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
+                  Snitt toalettbesök
+                </div>
+                <div className="text-3xl font-extrabold text-amber-400 tracking-tight">
+                  {stats.avgAwakenings} <span className="text-sm font-normal text-slate-400">/ natt</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Totalt {stats.totalAwakenings} st under perioden
+                </div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-4">
+                <div className="text-xs text-slate-400 flex items-center gap-1 mb-1">
+                  <Footprints className="w-3.5 h-3.5 text-emerald-400" />
+                  Snitt sömntid
+                </div>
+                <div className="text-3xl font-extrabold text-emerald-300 tracking-tight">
+                  {stats.avgSleepHours}h {stats.avgSleepMinsRest}m
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Ligger kvar i snitt: {stats.avgLingerMin} min
+                </div>
+              </div>
+            </div>
+
+            {/* Insiktskort */}
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white mb-0.5">Analys av nattmönster</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Dina nattuppvak sker oftast <strong className="text-amber-300">{stats.commonHour}</strong>. 
+                  Du sover helt utan uppvak {stats.zeroWakesPercentage}% av nätterna.
+                </p>
+              </div>
+            </div>
+
+            {/* Diagram */}
+            <div className="bg-slate-900/80 border border-slate-800/90 rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-sm font-bold text-white">Toalettbesök per dygn</h3>
+                  <p className="text-[11px] text-slate-400">Stapelhöjd visar antal uppvaknanden</p>
+                </div>
+                <span className="text-xs font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-md border border-amber-400/20">
+                  🚻 Nattuppvak
+                </span>
+              </div>
+
+              {stats.chartData.length > 0 ? (
+                <div className="h-44 flex items-end justify-between gap-1 pt-4 pb-2 border-b border-slate-800">
+                  {stats.chartData.map((d, i) => {
+                    const heightPercent = Math.min(100, Math.max(12, (d.wakeCount / 4) * 100));
+                    return (
+                      <div key={d.id || i} className="flex-1 flex flex-col items-center gap-1.5 group relative">
+                        <div className="opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity absolute -top-9 bg-slate-800 text-white text-[10px] py-1 px-2 rounded-lg shadow-xl pointer-events-none whitespace-nowrap z-20 border border-slate-700">
+                          {d.wakeCount} uppvak • Steg upp {d.outOfBedFormatted}
+                        </div>
+
+                        <span className={`text-[10px] font-bold ${d.wakeCount > 0 ? 'text-amber-300' : 'text-slate-600'}`}>
+                          {d.wakeCount}
+                        </span>
+
+                        <div 
+                          style={{ height: `${heightPercent}%` }}
+                          className={`w-full max-w-[28px] rounded-t-lg transition-all duration-500 ${
+                            d.wakeCount === 0 
+                              ? 'bg-slate-700/40' 
+                              : d.wakeCount === 1 
+                                ? 'bg-amber-500/80' 
+                                : 'bg-gradient-to-t from-amber-600 to-rose-500'
+                          }`}
+                        />
+
+                        <span className="text-[10px] text-slate-400 font-medium truncate w-full text-center">
+                          {d.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-10 text-slate-500 text-xs">
+                  Ingen data för den valda perioden.
+                </div>
+              )}
+
+              <div className="flex items-center justify-between text-[11px] text-slate-400 mt-3 pt-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-slate-700/60 inline-block"></span> 0 ggr
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-500 inline-block"></span> 1 gång
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span> 2+ ggr
+                </div>
+              </div>
+            </div>
+
+            {/* Exportknapp */}
+            <button
+              onClick={exportDataCSV}
+              className="w-full py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm"
+            >
+              <Download className="w-4 h-4 text-indigo-400" />
+              Exportera tabell (CSV / Excel) med uppstigningstider
+            </button>
+          </div>
+        )}
+
+        {/* FLIK 3: HISTORIK */}
+        {activeTab === 'history' && (
+          <div className="space-y-4 animate-in fade-in">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider">Alla nätter</h2>
+              <button 
+                onClick={() => setIsManualModalOpen(true)}
+                className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium"
+              >
+                <Plus className="w-3.5 h-3.5" /> Lägg till natt
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {sessions.length === 0 ? (
+                <div className="text-center py-12 text-slate-500 text-sm">
+                  Inga loggade nätter än.
+                </div>
+              ) : (
+                sessions.map((session) => {
+                  const wakeCount = session.nightEvents?.length || 0;
+                  return (
+                    <div 
+                      key={session.id}
+                      className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4 shadow-sm relative group"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="text-xs font-bold text-slate-300">
+                            {formatDate(session.dateString || session.bedTime)}
+                          </div>
+                          <div className="text-sm font-bold text-white mt-1 flex items-center gap-2">
+                            <span>🌙 {formatTime(session.bedTime)}</span>
+                            <span className="text-slate-500">➔</span>
+                            <span>🌅 {formatTime(session.outOfBedTime || session.wakeTime)}</span>
+                          </div>
+                          
+                          <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                            <span className="text-indigo-300">
+                              Sovtid: {getDurationText(session.bedTime, session.wakeTime)}
+                            </span>
+                            {session.wakeTime && session.outOfBedTime && (
+                              <span className="text-emerald-400">
+                                Steg upp: {formatTime(session.outOfBedTime)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col items-end gap-1.5">
+                          <span className={`px-2.5 py-1 rounded-xl text-xs font-bold border ${
+                            wakeCount === 0 
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                              : wakeCount === 1 
+                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                          }`}>
+                            🚻 {wakeCount} uppvak
+                          </span>
+
+                          <button
+                            onClick={() => handleDeleteSession(session.id)}
+                            className="text-slate-600 hover:text-rose-400 p-1 transition-colors"
+                            title="Radera natt"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {wakeCount > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-800/80">
+                          <div className="text-[11px] text-slate-400 mb-1 font-medium">Uppvakningstider:</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {session.nightEvents.map((evt, i) => (
+                              <span key={evt.id || i} className="text-[11px] px-2 py-0.5 rounded-md bg-slate-800 text-amber-200 border border-slate-700">
+                                🚽 #{i + 1}: kl. {formatTime(evt.timestamp)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+      </main>
+
+      {/* MANUELL MODAL */}
+      {isManualModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-in zoom-in-95">
+            <h2 className="text-lg font-bold text-white mb-1">Registrera natt i efterhand</h2>
+            <p className="text-xs text-slate-400 mb-4">Ange tiderna för läggdags, uppvak och uppstigning.</p>
+
+            <form onSubmit={handleSaveManual} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Datum för natten</label>
+                <input 
+                  type="date"
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">🌙 Gick och la mig</label>
+                <input 
+                  type="time"
+                  value={manualBedTime}
+                  onChange={(e) => setManualBedTime(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">👁️ Vaknade</label>
+                  <input 
+                    type="time"
+                    value={manualWakeTime}
+                    onChange={(e) => setManualWakeTime(e.target.value)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">🌅 Steg upp</label>
+                  <input 
+                    type="time"
+                    value={manualOutOfBedTime}
+                    onChange={(e) => setManualOutOfBedTime(e.target.value)}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Antal toalettbesök</label>
+                <div className="flex items-center gap-1.5">
+                  {[0, 1, 2, 3, 4].map(num => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setManualWakeCount(num)}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all ${
+                        manualWakeCount === num 
+                          ? 'bg-amber-500 text-slate-950 border-amber-400' 
+                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                      }`}
+                    >
+                      {num} st
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsManualModalOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                >
+                  Avbryt
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30"
+                >
+                  Spara natt
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* BOTTENNAVIGERING */}
+      <nav className={`fixed bottom-0 left-0 right-0 z-40 border-t backdrop-blur-lg px-6 py-2.5 ${
+        nightFilterMode 
+          ? 'bg-neutral-950/95 border-red-900/40' 
+          : 'bg-slate-950/90 border-slate-800/80'
+      }`}>
+        <div className="max-w-md mx-auto flex items-center justify-around">
+          
+          <button
+            onClick={() => setActiveTab('tracker')}
+            className={`flex flex-col items-center gap-1 transition-all ${
+              activeTab === 'tracker' 
+                ? (nightFilterMode ? 'text-red-400 font-bold scale-105' : 'text-indigo-400 font-bold scale-105') 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <div className="p-1 rounded-lg">
+              <Moon className="w-5 h-5" />
+            </div>
+            <span className="text-[11px]">Knappar</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={`flex flex-col items-center gap-1 transition-all ${
+              activeTab === 'stats' 
+                ? (nightFilterMode ? 'text-red-400 font-bold scale-105' : 'text-indigo-400 font-bold scale-105') 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <div className="p-1 rounded-lg">
+              <BarChart3 className="w-5 h-5" />
+            </div>
+            <span className="text-[11px]">Statistik</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`flex flex-col items-center gap-1 transition-all ${
+              activeTab === 'history' 
+                ? (nightFilterMode ? 'text-red-400 font-bold scale-105' : 'text-indigo-400 font-bold scale-105') 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <div className="p-1 rounded-lg">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <span className="text-[11px]">Historik</span>
+          </button>
+
+        </div>
+      </nav>
+
+    </div>
+  );
+}
